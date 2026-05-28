@@ -6,8 +6,8 @@ import torch
 app = Flask(__name__)
 CORS(app)
 
-# Load model and tokenizer from the saved folder
-MODEL_PATH = './sentihealth-model'
+# Load directly from Hugging Face
+MODEL_PATH = 's8108367/sentihealth-bert'
 tokenizer = BertTokenizer.from_pretrained(MODEL_PATH)
 model = BertForSequenceClassification.from_pretrained(MODEL_PATH)
 model.eval()
@@ -22,17 +22,14 @@ def predict():
     data = request.get_json()
     if not data or 'text' not in data:
         return jsonify({'error': 'Please provide a "text" field in the request body'}), 400
-
     text = data['text']
     inputs = tokenizer(text, return_tensors='pt', padding='max_length',
                        truncation=True, max_length=128)
     inputs = {k: v.to(device) for k, v in inputs.items()}
-
     with torch.no_grad():
         outputs = model(**inputs)
         probs = torch.softmax(outputs.logits, dim=1).squeeze()
         pred = torch.argmax(probs).item()
-
     return jsonify({
         'text': text,
         'sentiment': LABELS[pred],
