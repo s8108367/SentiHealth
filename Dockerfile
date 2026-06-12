@@ -5,5 +5,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY app.py .
+COPY database.py .
+COPY notifications.py .
 
 CMD ["gunicorn", "--bind", "0.0.0.0:7860", "app:app"]
