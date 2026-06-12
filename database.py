@@ -41,3 +41,23 @@ def get_product_summary(product):
     rows = c.fetchall()
     conn.close()
     return rows
+
+def get_previous_positive_percentage(product, exclude_last=5):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        SELECT sentiment FROM predictions
+        WHERE product = ?
+        ORDER BY created_at DESC
+        LIMIT 100
+    ''', (product,))
+    rows = c.fetchall()
+    conn.close()
+
+    if len(rows) <= exclude_last:
+        return None
+
+    older = rows[exclude_last:]
+    total = len(older)
+    positive = sum(1 for r in older if r[0] == 'positive')
+    return round((positive / total) * 100, 1)
