@@ -88,11 +88,13 @@ def index():
         'name': 'SentiHealth API',
         'status': 'running',
         'endpoints': {
-            'predict':       'POST /predict',
-            'summary':       'GET /summary?product=ibuprofen',
-            'notifications': 'GET /notifications',
-            'mark_read':     'POST /notifications/read',
-            'health':        'GET /health'
+            'predict':        'POST /predict',
+            'predict_batch':  'POST /predict_batch',
+            'summary':        'GET /summary?product=ibuprofen',
+            'compare':        'GET /compare?products=ibuprofen,paracetamol',
+            'notifications':  'GET /notifications',
+            'mark_read':      'POST /notifications/read',
+            'health':         'GET /health'
         }
     })
 
@@ -155,6 +157,124 @@ def summary():
         'total_reviews': total,
         'summary':       result
     })
+
+
+@app.route('/predict_batch', methods=['POST'])
+def predict_batch():
+    data = request.get_json()
+    if not data or 'reviews' not in data:
+        return jsonify({'error': 'Please provide a "reviews" list in the request body'}), 400
+
+    reviews = data['reviews']
+    if not isinstance(reviews, list) or len(reviews) == 0:
+        return jsonify({'error': '"reviews" must be a non-empty list'}), 400
+
+    if len(reviews) > 100:
+        return jsonify({'error': 'Maximum 100 reviews per batch'}), 400
+
+    product = data.get('product', 'unknown')
+    results = []
+
+    for review in reviews:
+        if not isinstance(review, str) or not review.strip():
+            results.append({'text': review, 'error': 'Invalid or empty text'})
+            continue
+
+        inputs = tokenizer(review, return_tensors='pt', padding='max_length', truncation=True, max_length=128)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model(**inputs)
+            probs   = torch.softmax(outputs.logits, dim=1).squeeze()
+            pred    = torch.argmax(probs).item()
+
+        sentiment  = LABELS[pred]
+        confidence = round(probs[pred].item(), 4)
+
+        save_prediction(product, review, sentiment, confidence)
+        check_and_trigger_notifications(product, sentiment, confidence)
+
+        results.append({
+            'text':       review,
+            'sentiment':  sentiment,
+            'confidence': confidence,
+            'scores': {
+                'negative': round(probs[0].item(), 4),
+                'neutral':  round(probs[1].item(), 4),
+                'positive': round(probs[2].item(), 4),
+            }
+        })
+
+    positive = sum(1 for r in results if r.get('sentiment') == 'positive')
+    negative = sum(1 for r in results if r.get('sentiment') == 'negative')
+    neutral  = sum(1 for r in results if r.get('sentiment') == 'neutral')
+    total    = len(results)
+
+    return jsonify({
+        'product':  product,
+        'total':    total,
+        'summary': {
+            'positive': {'count': positive, 'percentage': round((positive / total) * 100, 1)},
+            'negative': {'count': negative, 'percentage': round((negative / total) * 100, 1)},
+            'neutral':  {'count': neutral,  'percentage': round((neutral  / total) * 100, 1)},
+        },
+        'results': results
+    })
+
+
+@app.route('/compare', methods=['GET'])
+def compare():
+    products_param = request.args.get('products')
+    if not products_param:
+        return jsonify({'error': 'Please provide products: /compare?products=ibuprofen,paracetamol'}), 400
+
+    products = [p.strip() for p in products_param.split(',')]
+    if len(products) < 2:
+        return jsonify({'error': 'Please provide at least 2 products to compare'}), 400
+
+    if len(products) > 5:
+        return jsonify({'error': 'Maximum 5 products per comparison'}), 400
+
+    comparison = {}
+    for product in products:
+        rows = get_product_summary(product)
+        if not rows:
+            comparison[product] = {'error': f'No data found for {product}'}
+            continue
+
+        total    = sum(r[1] for r in rows)
+        positive = sum(r[1] for r in rows if r[0] == 'positive')
+        negative = sum(r[1] for r in rows if r[0] == 'negative')
+        neutral  = sum(r[1] for r in rows if r[0] == 'neutral')
+
+        breakdown = {}
+        for sentiment, count, avg_conf in rows:
+            breakdown[sentiment] = {
+                'count':          count,
+                'percentage':     round((count / total) * 100, 1),
+                'avg_confidence': round(avg_conf, 4)
+            }
+
+        comparison[product] = {
+            'total_reviews':       total,
+            'positive_percentage': round((positive / total) * 100, 1),
+            'negative_percentage': round((negative / total) * 100, 1),
+            'neutral_percentage':  round((neutral  / total) * 100, 1),
+            'breakdown':           breakdown
+        }
+
+    ranked = sorted(
+        [p for p in comparison if 'error' not in comparison[p]],
+        key=lambda p: comparison[p]['positive_percentage'],
+        reverse=True
+    )
+
+    return jsonify({
+        'comparison':   comparison,
+        'ranking':      ranked,
+        'verdict':      f'{ranked[0]} has the highest positive sentiment at {comparison[ranked[0]]["positive_percentage"]}%' if ranked else 'No data available'
+    })
+
 
 @app.route('/notifications', methods=['GET'])
 def notifications():
